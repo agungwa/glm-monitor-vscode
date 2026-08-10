@@ -1,0 +1,128 @@
+{
+  "name": "glm-monitor-vscode",
+  "displayName": "GLM Monitor",
+  "description": "Monitor Z.ai GLM quota, rate-limits, and local Claude Code token spend across all your machines.",
+  "version": "0.1.0",
+  "publisher": "agungwa",
+  "author": "agungwa",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agungwa/glm-monitor-vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/agungwa/glm-monitor-vscode/issues"
+  },
+  "homepage": "https://github.com/agungwa/glm-monitor-vscode#readme",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "keywords": ["glm", "zai", "claude-code", "anthropic", "quota", "vscode", "monitoring", "token-usage"],
+  "main": "./dist/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "glm-monitor", "title": "GLM Monitor", "icon": "media/icon.svg" }
+      ]
+    },
+    "views": {
+      "glm-monitor": [{ "id": "glm-monitor.quota", "name": "Quota & Spend" }]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "glm-monitor.refresh",
+          "when": "view == glm-monitor.quota",
+          "group": "navigation"
+        },
+        {
+          "command": "glm-monitor.showPanel",
+          "when": "view == glm-monitor.quota",
+          "group": "navigation"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "glm-monitor.showPanel", "title": "GLM Monitor: Show Panel", "category": "GLM Monitor" },
+      { "command": "glm-monitor.refresh", "title": "GLM Monitor: Refresh Now", "category": "GLM Monitor", "icon": "$(refresh)" },
+      { "command": "glm-monitor.openSettings", "title": "GLM Monitor: Open Settings", "category": "GLM Monitor" }
+    ],
+    "configuration": {
+      "title": "GLM Monitor",
+      "properties": {
+        "glmMonitor.refreshIntervalSec": {
+          "type": "number",
+          "default": 300,
+          "minimum": 30,
+          "description": "Seconds between live Z.ai quota refreshes."
+        },
+        "glmMonitor.localSpendRefreshSec": {
+          "type": "number",
+          "default": 900,
+          "minimum": 60,
+          "description": "Seconds between local Claude Code session-spend re-parses."
+        },
+        "glmMonitor.warnThreshold": {
+          "type": "number",
+          "default": 80,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage at which the quota indicator turns yellow and a warning notification fires once."
+        },
+        "glmMonitor.dangerThreshold": {
+          "type": "number",
+          "default": 90,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage at which the quota indicator turns red."
+        },
+        "glmMonitor.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional Z.ai API key override. If empty, the key is read from `~/.claude/settings.json` (`env.ANTHROPIC_AUTH_TOKEN`)."
+        },
+        "glmMonitor.baseUrl": {
+          "type": "string",
+          "default": "https://api.z.ai/api/monitor",
+          "description": "Z.ai monitor API base URL."
+        },
+        "glmMonitor.claudeDir": {
+          "type": "string",
+          "default": "~/.claude",
+          "description": "Claude Code config directory used to read the API key and session logs."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build:extension": "node esbuild.config.mjs",
+    "build:webview": "vite build",
+    "build": "npm run build:extension && npm run build:webview",
+    "watch:extension": "node esbuild.config.mjs --watch",
+    "watch:webview": "vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/vscode": "^1.85.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "esbuild": "^0.24.0",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "@vscode/vsce": "^3.2.0"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.453.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7"
+  }
+}
