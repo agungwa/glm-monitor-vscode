@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { QuotaCard } from './components/QuotaCard';
 import { LocalSpendCard } from './components/LocalSpendCard';
 import { UsageRangeCard } from './components/UsageRangeCard';
+import { EnergyImpactCard } from './components/EnergyImpactCard';
 import { TopSessionsCard } from './components/TopSessionsCard';
 import { ModelGroupsCard } from './components/ModelGroupsCard';
 import { Header } from './components/Header';
@@ -36,6 +37,7 @@ export function App() {
       <QuotaCard result={result} />
       <UsageRangeCard result={result} />
       <LocalSpendCard result={result} />
+      <EnergyImpactCard result={result} />
       <TopSessionsCard result={result} />
       <ModelGroupsCard result={result} />
     </div>

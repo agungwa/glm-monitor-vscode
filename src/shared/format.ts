@@ -12,6 +12,12 @@ export function formatPercent(n: number | undefined | null, fallback = '—'): s
   return `${n.toFixed(1)}%`;
 }
 
+/** Fixed-precision decimal, e.g. formatDecimal(2.567, 2) → "2.57". Falls back to "—" for NaN/null. */
+export function formatDecimal(n: number | undefined | null, precision = 2, fallback = '—'): string {
+  if (n == null || !Number.isFinite(n)) return fallback;
+  return n.toFixed(precision);
+}
+
 export function formatRelativeTime(ts: number | undefined | null): string {
   if (!ts) return 'never';
   const diff = Date.now() - ts;
