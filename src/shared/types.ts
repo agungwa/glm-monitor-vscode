@@ -98,6 +98,8 @@ export interface LocalSpendBucket {
 
 export interface LocalModelSpend {
   model: string;
+  /** Parser source: 'claude-code' | 'codex' | ... */
+  source?: string;
   today: LocalSpendBucket;
   month: LocalSpendBucket;
   allTime: LocalSpendBucket;
@@ -105,6 +107,8 @@ export interface LocalModelSpend {
 
 export interface SessionSpend {
   sessionId: string;
+  /** Parser source: 'claude-code' | 'codex' | ... */
+  source?: string;
   /** Human-readable project path decoded from the parent folder slug. */
   projectPath: string;
   /** Raw slug (parent folder name) for sorting stability. */
@@ -120,6 +124,17 @@ export interface SessionSpend {
   turnCount: number;
 }
 
+export interface ParsedSourceSummary {
+  /** Parser id (e.g. 'claude-code'). */
+  id: string;
+  /** Human-readable label. */
+  label: string;
+  /** Number of session files discovered for this source. */
+  files: number;
+  /** Total all-time tokens attributed to this source. */
+  totalTokens: number;
+}
+
 export interface LocalSpendResult {
   today: LocalSpendBucket;
   month: LocalSpendBucket;
@@ -127,6 +142,8 @@ export interface LocalSpendResult {
   perModel: LocalModelSpend[];
   /** Top sessions by all-time total tokens, descending. */
   topSessions: SessionSpend[];
+  /** Per-parser rollup so the UI can show which CLIs contributed. */
+  sources: ParsedSourceSummary[];
   machineName: string;
   parsedFiles: number;
   parsedAt: number;

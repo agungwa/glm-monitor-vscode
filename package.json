@@ -2,7 +2,7 @@
   "name": "glm-monitor-vscode",
   "displayName": "GLM Monitor",
   "description": "Monitor Z.ai GLM quota, rate-limits, and local Claude Code token spend across all your machines.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "agungwa",
   "author": "agungwa",
   "license": "MIT",

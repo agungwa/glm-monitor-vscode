@@ -50,7 +50,7 @@ export function TopSessionsCard({ result }: Props) {
                 }}
               />
               <div className="text-xs opacity-60 mt-0.5">
-                {s.topModel ?? 'unknown'} · {s.turnCount} turns · last{' '}
+                {s.source ? `[${s.source}] ` : ''}{s.topModel ?? 'unknown'} · {s.turnCount} turns · last{' '}
                 {formatRelativeTime(s.lastActivity)}
               </div>
             </div>

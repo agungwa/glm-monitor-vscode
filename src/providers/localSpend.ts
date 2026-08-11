@@ -8,8 +8,12 @@ import {
   type LocalSpendBucket,
   type LocalSpendResult,
   type LocalModelSpend,
+  type ParsedSourceSummary,
   type SessionSpend,
 } from '../shared/types';
+import { type ParseContext, type ParsedUsage, type SessionParser } from './parsers/types';
+import { createClaudeCodeParser } from './parsers/claudeCode';
+import { createCodexParser } from './parsers/codex';
 
 interface ModelAccumulator {
   today: LocalSpendBucket;
@@ -29,6 +33,8 @@ interface SessionAccumulator {
 interface FileParseResult {
   byModel: Map<string, ModelAccumulator>;
   session: SessionAccumulator | null;
+  /** True if any line yielded usage — used to count "active" files. */
+  hasUsage: boolean;
 }
 
 interface FileCacheEntry {
@@ -41,13 +47,6 @@ const fileCache = new Map<string, FileCacheEntry>();
 
 /** Cap on top-N sessions kept (avoids unbounded sort cost). */
 const TOP_SESSIONS_LIMIT = 20;
-
-function expandHome(p: string): string {
-  if (!p) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
 
 function startOfDay(d = new Date()): number {
   const x = new Date(d);
@@ -73,52 +72,13 @@ function emptySession(): SessionAccumulator {
   };
 }
 
-interface ParsedUsage {
-  model: string | null;
-  ts: number | null;
-  bucket: Partial<LocalSpendBucket> | null;
-}
-
-function extractUsage(line: string): ParsedUsage | null {
-  let obj: any;
-  try {
-    obj = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  const msg = obj?.message;
-  if (!msg || typeof msg !== 'object') return null;
-  const usage = msg.usage;
-  if (!usage || typeof usage !== 'object') return null;
-
-  const ts: number | null =
-    typeof obj.timestamp === 'number'
-      ? obj.timestamp
-      : typeof obj.timestamp === 'string'
-        ? Date.parse(obj.timestamp)
-        : null;
-
-  const bucket: Partial<LocalSpendBucket> = {
-    inputTokens: num(usage.input_tokens),
-    outputTokens: num(usage.output_tokens),
-    cacheReadTokens: num(usage.cache_read_input_tokens),
-    cacheCreationTokens: num(usage.cache_creation_input_tokens),
-  };
-  if (
-    bucket.inputTokens == null &&
-    bucket.outputTokens == null &&
-    bucket.cacheReadTokens == null &&
-    bucket.cacheCreationTokens == null
-  ) {
-    return null;
-  }
-
-  return { model: typeof msg.model === 'string' ? msg.model : null, ts, bucket };
-}
-
-function num(v: unknown): number | undefined {
-  const n = typeof v === 'string' ? Number(v) : (v as number);
-  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
+function totalOf(b: Partial<LocalSpendBucket>): number {
+  return (
+    (b.inputTokens ?? 0) +
+    (b.outputTokens ?? 0) +
+    (b.cacheReadTokens ?? 0) +
+    (b.cacheCreationTokens ?? 0)
+  );
 }
 
 function addTo(dst: ModelAccumulator, src: Partial<LocalSpendBucket>, ts: number | null): void {
@@ -128,32 +88,31 @@ function addTo(dst: ModelAccumulator, src: Partial<LocalSpendBucket>, ts: number
 }
 
 /**
- * Decode a Claude-Code project folder slug back into a best-guess path.
- * e.g. "-Users-mymac--claude" -> "/Users/mymac/.claude".
- * Lossy: the original encoding maps both "/" and "." to "-", so we heuristically
- * collapse "//"-style runs. Callers should also keep the raw slug as a fallback.
+ * Build the active parser list. Each parser is responsible for discovering its
+ * own log files and knowing its own line format. To support another CLI agent,
+ * add a parser in ./parsers/ and append it here.
  */
-export function decodeProjectSlug(slug: string): string {
-  if (!slug) return slug;
-  // Strip a leading dash (the leading "/"), then replace dashes with slashes.
-  let s = slug.replace(/^-+/, '');
-  s = s.replace(/-/g, '/');
-  // A double-slash in the result implies the original had a "." there (since
-  // "/foo/.bar" encodes to "-foo--bar" → decodes to "/foo//bar").
-  s = s.replace(/\/{2,}/g, (m) => '/.' + m.slice(1).replace(/\//g, ''));
-  return '/' + s;
+function buildParsers(claudeDir: string): SessionParser[] {
+  return [createClaudeCodeParser(claudeDir), createCodexParser()];
 }
 
-async function parseFile(filePath: string): Promise<FileParseResult> {
+async function parseFile(
+  filePath: string,
+  parser: SessionParser,
+): Promise<FileParseResult> {
   const byModel = new Map<string, ModelAccumulator>();
   const session = emptySession();
+  const ctx: ParseContext = { filePath, state: {} };
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  let hasUsage = false;
+
   for await (const line of rl) {
     if (!line) continue;
-    if (!line.includes('"usage"')) continue;
-    const parsed = extractUsage(line);
+    const parsed: ParsedUsage | null = parser.parseLine(line, ctx);
     if (!parsed || !parsed.bucket) continue;
+    hasUsage = true;
 
     // Per-session totals (across all models in this file).
     addInto(session.bucket, parsed.bucket);
@@ -176,118 +135,117 @@ async function parseFile(filePath: string): Promise<FileParseResult> {
     addTo(acc, parsed.bucket, parsed.ts);
   }
 
-  return { byModel, session: session.turnCount > 0 ? session : null };
-}
-
-function totalOf(b: Partial<LocalSpendBucket>): number {
-  return (
-    (b.inputTokens ?? 0) +
-    (b.outputTokens ?? 0) +
-    (b.cacheReadTokens ?? 0) +
-    (b.cacheCreationTokens ?? 0)
-  );
-}
-
-function listSessionFiles(claudeDir: string): string[] {
-  const projectsDir = path.join(expandHome(claudeDir), 'projects');
-  const files: string[] = [];
-  try {
-    for (const project of fs.readdirSync(projectsDir)) {
-      const projectPath = path.join(projectsDir, project);
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(projectPath);
-      } catch {
-        continue;
-      }
-      if (!stat.isDirectory()) continue;
-      for (const entry of fs.readdirSync(projectPath)) {
-        if (entry.endsWith('.jsonl')) files.push(path.join(projectPath, entry));
-      }
-    }
-  } catch {
-    /* projects dir missing — no local data yet */
-  }
-  return files;
+  return { byModel, session: session.turnCount > 0 ? session : null, hasUsage };
 }
 
 export async function getLocalSpend(claudeDir: string): Promise<LocalSpendResult> {
-  const files = listSessionFiles(claudeDir);
+  const parsers = buildParsers(claudeDir);
+
   const today = emptyBucket();
   const month = emptyBucket();
   const allTime = emptyBucket();
-  const perModel = new Map<string, ModelAccumulator>();
+  // Keyed by `${source}::${model}` so models with the same name across
+  // different CLIs are kept distinct in the per-model breakdown.
+  const perModel = new Map<string, ModelAccumulator & { model: string; source: string }>();
   const sessions: SessionSpend[] = [];
+  const sources: ParsedSourceSummary[] = [];
 
   let parsedFiles = 0;
-  for (const file of files) {
-    let stat: fs.Stats;
+
+  for (const parser of parsers) {
+    let files: string[] = [];
     try {
-      stat = fs.statSync(file);
+      files = parser.discoverFiles();
     } catch {
-      continue;
+      files = [];
     }
 
-    let fileResult: FileParseResult;
-    const cached = fileCache.get(file);
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-      fileResult = cached.result;
-    } else {
+    let sourceFiles = 0;
+    let sourceTokens = 0;
+
+    for (const file of files) {
+      let stat: fs.Stats;
       try {
-        fileResult = await parseFile(file);
+        stat = fs.statSync(file);
       } catch {
         continue;
       }
-      fileCache.set(file, {
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-        result: fileResult,
-      });
-    }
 
-    parsedFiles++;
-
-    for (const [model, acc] of fileResult.byModel) {
-      addInto(today, acc.today);
-      addInto(month, acc.month);
-      addInto(allTime, acc.allTime);
-      let dst = perModel.get(model);
-      if (!dst) {
-        dst = emptyAccumulator();
-        perModel.set(model, dst);
-      }
-      addInto(dst.today, acc.today);
-      addInto(dst.month, acc.month);
-      addInto(dst.allTime, acc.allTime);
-    }
-
-    if (fileResult.session) {
-      const sessionId = path.basename(file, '.jsonl');
-      const projectSlug = path.basename(path.dirname(file));
-      // Find the top model within the session by tokens.
-      let topModel: string | null = null;
-      let topModelTokens = -1;
-      for (const [m, t] of fileResult.session.perModel) {
-        if (t > topModelTokens) {
-          topModelTokens = t;
-          topModel = m;
+      let fileResult: FileParseResult;
+      const cacheKey = `${parser.id}::${file}`;
+      const cached = fileCache.get(cacheKey);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        fileResult = cached.result;
+      } else {
+        try {
+          fileResult = await parseFile(file, parser);
+        } catch {
+          continue;
         }
+        fileCache.set(cacheKey, {
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+          result: fileResult,
+        });
       }
-      sessions.push({
-        sessionId,
-        projectSlug,
-        projectPath: decodeProjectSlug(projectSlug),
-        allTime: fileResult.session.bucket,
-        firstActivity: fileResult.session.firstTs,
-        lastActivity: fileResult.session.lastTs,
-        topModel,
-        turnCount: fileResult.session.turnCount,
-      });
+
+      // Count every scanned file (matches the Chrome extension's UX).
+      parsedFiles++;
+      sourceFiles++;
+
+      for (const [model, acc] of fileResult.byModel) {
+        addInto(today, acc.today);
+        addInto(month, acc.month);
+        addInto(allTime, acc.allTime);
+        sourceTokens += acc.allTime.totalTokens;
+
+        const key = `${parser.id}::${model}`;
+        let dst = perModel.get(key);
+        if (!dst) {
+          dst = { ...emptyAccumulator(), model, source: parser.id };
+          perModel.set(key, dst);
+        }
+        addInto(dst.today, acc.today);
+        addInto(dst.month, acc.month);
+        addInto(dst.allTime, acc.allTime);
+      }
+
+      if (fileResult.session) {
+        const sessionId = path.basename(file, '.jsonl');
+        const ctx: ParseContext = { filePath: file, state: {} };
+        const meta = parser.decodeProject(file, ctx);
+        // Find the top model within the session by tokens.
+        let topModel: string | null = null;
+        let topModelTokens = -1;
+        for (const [m, t] of fileResult.session.perModel) {
+          if (t > topModelTokens) {
+            topModelTokens = t;
+            topModel = m;
+          }
+        }
+        sessions.push({
+          sessionId,
+          source: parser.id,
+          projectSlug: meta.projectSlug,
+          projectPath: meta.projectPath,
+          allTime: fileResult.session.bucket,
+          firstActivity: fileResult.session.firstTs,
+          lastActivity: fileResult.session.lastTs,
+          topModel,
+          turnCount: fileResult.session.turnCount,
+        });
+      }
     }
+
+    sources.push({
+      id: parser.id,
+      label: parser.label,
+      files: sourceFiles,
+      totalTokens: sourceTokens,
+    });
   }
 
-  const modelList: LocalModelSpend[] = [...perModel.entries()]
-    .map(([model, acc]) => ({ model, ...acc }))
+  const modelList: LocalModelSpend[] = [...perModel.values()]
     .sort((a, b) => b.allTime.totalTokens - a.allTime.totalTokens);
 
   sessions.sort((a, b) => b.allTime.totalTokens - a.allTime.totalTokens);
@@ -299,6 +257,7 @@ export async function getLocalSpend(claudeDir: string): Promise<LocalSpendResult
     allTime,
     perModel: modelList,
     topSessions,
+    sources,
     machineName: os.hostname(),
     parsedFiles,
     parsedAt: Date.now(),
